@@ -1,6 +1,10 @@
 #ifndef S3FS_CURL_H_
 #define S3FS_CURL_H_
 
+#include <map>
+#include <string>
+#include <openssl/evp.h>
+
 // memory structure for curl write memory callback 
 struct BodyStruct {
   char *text;    

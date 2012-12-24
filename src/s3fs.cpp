@@ -51,6 +51,12 @@
 #include "cache.h"
 #include "string_util.h"
 
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include "streaming.h"
+
 using namespace std;
 
 struct s3_object {
@@ -2310,6 +2316,45 @@ static int s3fs_open(const char *path, struct fuse_file_info *fi) {
      if(result != 0)
         return result;
   }
+  // if no write flag specified, then do streaming read
+  if( !((unsigned int)fi->flags & O_WRONLY)) {
+    if(foreground)
+      cout << " it's not WRONLY!! " << endl;
+
+    int result;
+    char *s3_realpath;
+    CURL *curl = NULL;
+    string url;
+    string resource;
+    string local_md5;
+    vector<string> request_headers;
+
+    if(foreground) 
+      cout << "   get_local_fd[path=" << path << "]" << endl;
+
+    s3_realpath = get_realpath(path);
+    resource = urlEncode(service_path + bucket + s3_realpath);
+    url = host + resource;
+
+    if(debug)
+      syslog(LOG_DEBUG, "LOCAL FD ooooo");
+    
+    auto_curl_slist headers;
+    string date = get_date();
+    string my_url = prepare_url(url.c_str());
+    request_headers.push_back("Date: " + date);
+    request_headers.push_back("Content-Type: ");
+    
+    if(public_bucket.substr(0,1) != "1") {
+      headers.append("Authorization: AWS " + AWSAccessKeyId + ":" +
+        calc_signature("GET", "", date, headers.get(), resource));
+      request_headers.push_back("Authorization: AWS " + AWSAccessKeyId + ":" +
+				calc_signature("GET", "", date, headers.get(), resource));
+      
+    }
+
+    return start_streaming_read(my_url, request_headers);
+  }
 
   if((fi->fh = get_local_fd(path)) <= 0)
     return -EIO;
@@ -2326,8 +2371,48 @@ static int s3fs_read(
     const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
   int res;
 
-  if(foreground) 
-    cout << "s3fs_read[path=" << path << "]" << endl;
+  //  if(foreground) 
+  //    cout << "s3fs_read[path=" << path << "]" << endl;
+  if( !((unsigned int)fi->flags & O_WRONLY)) {
+    pthread_mutex_lock(current_mutex);
+    const char * buffer = current_buffer->front();
+    if(buffer == NULL && current_buffer->eof()){
+      cout << __LINE__ << "eof" << endl;
+      pthread_mutex_unlock(current_mutex);
+      return 0;
+    }
+    pthread_mutex_unlock(current_mutex);
+
+    while(true){
+      sleep(0.05);
+      cout << "." << endl;
+      pthread_mutex_lock(current_mutex);
+      cout << "." << endl;
+      if(current_buffer->front_size() > 0
+	 or current_buffer->eof()){
+	pthread_mutex_unlock(current_mutex);
+	break;
+      }
+      pthread_mutex_unlock(current_mutex);
+      cout << "<" << endl;
+    }
+    
+    pthread_mutex_lock(current_mutex);
+    size_t front_size = current_buffer->front_size();
+    if( front_size <= size ){
+      cout << __LINE__ << " " << front_size << "bytes!" << endl;
+      memcpy(buf, current_buffer->front(), front_size);
+      current_buffer->pop();
+      pthread_mutex_unlock(current_mutex);
+      return front_size;
+    }else{
+      cout << __LINE__ << " " << size << "bytes!" << endl;
+      memcpy(buf, current_buffer->front(), size);
+      current_buffer->set_front_offset(size);
+      pthread_mutex_unlock(current_mutex);
+      return size;
+    }
+  }
 
   res = pread(fi->fh, buf, size, offset);
   if(res == -1)
