@@ -3618,6 +3618,7 @@ char *get_realpath(const char *path) {
   size_t size;
   char *realpath;
 
+  cout<< "mount_prefix: " << mount_prefix << endl;
   size  = (strlen(path) + 1) + (mount_prefix.size() + 1);
   realpath = (char *) malloc(size);
   snprintf(realpath, size, "%s%s", mount_prefix.c_str(), path);
